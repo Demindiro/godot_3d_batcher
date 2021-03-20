@@ -133,14 +133,16 @@ impl BatchedMeshInstance {
 	fn _enter_tree(&mut self, owner: TRef<Spatial>) {
 		debug_assert_eq!(self.id, None);
 		if let Some(mesh) = &self.mesh {
-			let rid = { owner.get_world().unwrap() };
-			let rid = unsafe { rid.assume_safe() };
-			self.id = Some(add_instance(
-				mesh.clone(),
-				owner.cast_instance().unwrap().claim(),
-				rid,
-				self.use_color,
-			));
+			if self.visible(owner) {
+				let rid = { owner.get_world().unwrap() };
+				let rid = unsafe { rid.assume_safe() };
+				self.id = Some(add_instance(
+					mesh.clone(),
+					owner.cast_instance().unwrap().claim(),
+					rid,
+					self.use_color,
+				));
+			}
 		}
 	}
 
@@ -156,6 +158,27 @@ impl BatchedMeshInstance {
 		}
 	}
 
+	#[export]
+	fn _notification(&mut self, owner: TRef<Spatial>, what: i64) {
+		if what == Spatial::NOTIFICATION_VISIBILITY_CHANGED {
+			if let Some(id) = self.id {
+				remove_instance(
+					self.mesh.as_ref().expect("Mesh is None!"),
+					id,
+					self.use_color,
+				);
+				self.id = None;
+			}
+			if let Some(mesh) = self.mesh.as_ref() {
+				if self.visible(owner) {
+					let rid = { owner.get_world().unwrap() };
+					let rid = unsafe { rid.assume_safe() };
+					self.id = Some(add_instance(mesh.clone(), owner.cast_instance().unwrap().claim(), rid, self.use_color));
+				}
+			}
+		}
+	}
+
 	fn pre_change_mesh(&mut self, _owner: TRef<Spatial>) {
 		if let Some(id) = self.id {
 			remove_instance(
@@ -168,7 +191,7 @@ impl BatchedMeshInstance {
 	}
 
 	fn post_change_mesh(&mut self, owner: TRef<Spatial>) {
-		if owner.is_inside_tree() {
+		if self.visible(owner) {
 			if let Some(mesh) = &self.mesh {
 				let rid = { owner.get_world().unwrap() };
 				let rid = unsafe { rid.assume_safe() };
@@ -224,6 +247,10 @@ impl BatchedMeshInstance {
 			}
 		}
 	}
+
+	fn visible(&self, owner: TRef<Spatial>) -> bool {
+		owner.is_inside_tree() && owner.is_visible_in_tree()
+	}
 }
 
 fn add_instance(
@@ -269,6 +296,8 @@ fn add_instance(
 		vs.instance_set_scenario(inst_rid, world.scenario());
 		vs.instance_set_base(inst_rid, mm_rid);
 		vs.instance_set_visible(inst_rid, true);
+		#[cfg(feature = "verbose")]
+		godot_print!("Adding {:?} & {:?}", inst_rid, mm_rid);
 		MultiMeshEntry {
 			instance_rid: inst_rid,
 			multimesh_rid: mm_rid,
@@ -324,7 +353,15 @@ fn remove_instance(mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
 		.binary_search_by(|e| e.id.cmp(&id))
 		.expect("ID not found");
 	entry.nodes.remove(index);
-	vs.multimesh_set_visible_instances(entry.multimesh_rid, entry.nodes.len() as i64);
+	if entry.nodes.len() == 0 {
+		#[cfg(feature = "verbose")]
+		godot_print!("Removing {:?} & {:?}", entry.instance_rid, entry.multimesh_rid);
+		vs.free_rid(entry.instance_rid);
+		vs.free_rid(entry.multimesh_rid);
+		map.remove(mesh);
+	} else {
+		vs.multimesh_set_visible_instances(entry.multimesh_rid, entry.nodes.len() as i64);
+	}
 }
 
 fn init(handle: InitHandle) {
