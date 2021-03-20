@@ -1,0 +1,44 @@
+[gd_scene load_steps=7 format=2]
+
+[ext_resource path="res://test_mass.gd" type="Script" id=1]
+[ext_resource path="res://fps.gd" type="Script" id=2]
+[ext_resource path="res://drawcalls.gd" type="Script" id=3]
+
+[sub_resource type="CapsuleMesh" id=1]
+
+[sub_resource type="CubeMesh" id=2]
+
+[sub_resource type="QuadMesh" id=3]
+
+[node name="Mass" type="Node"]
+script = ExtResource( 1 )
+count = 30000
+batched = true
+meshes = [ SubResource( 1 ), SubResource( 2 ), SubResource( 3 ) ]
+
+[node name="Camera" type="Camera" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 21 )
+
+[node name="FPS" type="Label" parent="."]
+anchor_left = 0.0556012
+anchor_top = 0.881504
+anchor_right = 0.0556012
+anchor_bottom = 0.881504
+margin_right = 40.0
+margin_bottom = 14.0
+script = ExtResource( 2 )
+__meta__ = {
+"_edit_use_anchors_": true
+}
+
+[node name="Drawcalls" type="Label" parent="."]
+anchor_left = 0.351487
+anchor_top = 0.83596
+anchor_right = 0.351487
+anchor_bottom = 0.83596
+margin_right = 40.0
+margin_bottom = 14.0
+script = ExtResource( 3 )
+__meta__ = {
+"_edit_use_anchors_": true
+}
