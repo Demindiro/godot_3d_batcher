@@ -1,4 +1,4 @@
-[gd_scene load_steps=6 format=2]
+[gd_scene load_steps=7 format=2]
 
 [ext_resource path="res://drawcalls.gd" type="Script" id=1]
 [ext_resource path="res://addons/3d_batcher/batched_mesh_instance.gdns" type="Script" id=2]
@@ -6,7 +6,11 @@
 
 [sub_resource type="CubeMesh" id=1]
 
+[sub_resource type="SpatialMaterial" id=3]
+vertex_color_use_as_albedo = true
+
 [sub_resource type="CubeMesh" id=2]
+material = SubResource( 3 )
 
 [node name="Node" type="Node"]
 script = ExtResource( 3 )
@@ -49,19 +53,27 @@ visible = false
 [node name="Spatial" type="Spatial" parent="Batched"]
 transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 3.51205, -4.76837e-07, -4.43869 )
 script = ExtResource( 2 )
+use_color = false
 mesh = SubResource( 2 )
+color = Color( 1, 1, 1, 1 )
 
 [node name="Spatial2" type="Spatial" parent="Batched"]
 transform = Transform( -0.00931928, -0.303883, -1.88475, 0.140342, 4.18216, -0.134465, 0.272388, -2.16516, 0.00479684, -2.31921, 0, 3.40203 )
 script = ExtResource( 2 )
+use_color = true
 mesh = SubResource( 2 )
+color = Color( 0.172549, 0.172549, 0.172549, 1 )
 
 [node name="Spatial3" type="Spatial" parent="Batched"]
 transform = Transform( 0.348094, -0.0251036, 0.937124, 0.25, 0.965926, -0.0669873, -0.903509, 0.257599, 0.342509, 5.16707, 0.737789, 4.77157 )
 script = ExtResource( 2 )
+use_color = true
 mesh = SubResource( 2 )
+color = Color( 1, 0, 0, 1 )
 
 [node name="Spatial4" type="Spatial" parent="Batched"]
 transform = Transform( 0.348094, -0.0251036, 0.937124, 0.25, 0.965926, -0.0669873, -0.903509, 0.257599, 0.342509, 6.89629, 1.97971, 0.283224 )
 script = ExtResource( 2 )
+use_color = false
 mesh = SubResource( 2 )
+color = Color( 1, 1, 1, 1 )
