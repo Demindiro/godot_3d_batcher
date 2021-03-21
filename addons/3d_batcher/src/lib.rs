@@ -3,7 +3,7 @@
 mod cull;
 
 use cull::*;
-use gdnative::api::{Engine, Mesh, Node, Object, VisualServer};
+use gdnative::api::{Engine, Mesh, Node, Object, VisualServer, World};
 use gdnative::prelude::*;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
@@ -35,8 +35,8 @@ struct MultiMeshEntry {
 
 struct State {
 	id_counter: usize,
-	no_color_map: HashMap<Ref<Mesh>, MultiMeshEntry>,
-	color_map: HashMap<Ref<Mesh>, MultiMeshEntry>,
+	no_color_map: HashMap<(Ref<World>, Ref<Mesh>), MultiMeshEntry>,
+	color_map: HashMap<(Ref<World>, Ref<Mesh>), MultiMeshEntry>,
 	enable_culling: bool,
 }
 
@@ -70,7 +70,8 @@ impl BatchedMeshManager {
 			name: "reload",
 			args: &[],
 		});
-		builder.add_property("enable_culling")
+		builder
+			.add_property("enable_culling")
 			.with_getter(Self::gd_get_enable_culling)
 			.with_setter(Self::gd_set_enable_culling)
 			.done();
@@ -136,7 +137,7 @@ impl BatchedMeshManager {
 			return;
 		};
 
-		for (mesh, entry) in map.no_color_map.iter_mut() {
+		for ((_, mesh), entry) in map.no_color_map.iter_mut() {
 			let mut count = 0usize;
 			let mut w = entry.visualserver_data.write();
 			let aabb = unsafe { mesh.assume_safe().get_aabb() };
@@ -160,7 +161,7 @@ impl BatchedMeshManager {
 			vs.multimesh_set_visible_instances(entry.multimesh_rid, count as i64);
 			vs.multimesh_set_as_bulk_array(entry.multimesh_rid, entry.visualserver_data.clone());
 		}
-		for (mesh, entry) in map.color_map.iter_mut() {
+		for ((_, mesh), entry) in map.color_map.iter_mut() {
 			let mut count = 0usize;
 			let mut w = entry.visualserver_data.write();
 			let aabb = unsafe { mesh.assume_safe().get_aabb() };
@@ -189,11 +190,17 @@ impl BatchedMeshManager {
 	}
 
 	fn gd_get_enable_culling(&self, _owner: TRef<Node>) -> bool {
-		MULTI_MESHES.read().expect("Failed to read MULTI_MESHES").enable_culling
+		MULTI_MESHES
+			.read()
+			.expect("Failed to read MULTI_MESHES")
+			.enable_culling
 	}
 
 	fn gd_set_enable_culling(&mut self, _owner: TRef<Node>, enable: bool) {
-		MULTI_MESHES.write().expect("Failed to write MULTI_MESHES").enable_culling = enable;
+		MULTI_MESHES
+			.write()
+			.expect("Failed to write MULTI_MESHES")
+			.enable_culling = enable;
 	}
 }
 
@@ -221,12 +228,10 @@ impl BatchedMeshInstance {
 		debug_assert_eq!(self.id, None);
 		if let Some(mesh) = &self.mesh {
 			if self.visible(owner) {
-				let rid = { owner.get_world().unwrap() };
-				let rid = unsafe { rid.assume_safe() };
 				self.id = Some(add_instance(
+					owner.get_world().expect("World is None"),
 					mesh.clone(),
 					owner.cast_instance().unwrap().claim(),
-					rid,
 					self.use_color,
 				));
 			}
@@ -234,10 +239,11 @@ impl BatchedMeshInstance {
 	}
 
 	#[export]
-	fn _exit_tree(&mut self, _owner: TRef<Spatial>) {
+	fn _exit_tree(&mut self, owner: TRef<Spatial>) {
 		if let Some(id) = self.id {
 			remove_instance(
-				self.mesh.as_ref().expect("Mesh is None!"),
+				&owner.get_world().expect("World is None"),
+				self.mesh.as_ref().expect("Mesh is None"),
 				id,
 				self.use_color,
 			);
@@ -250,20 +256,19 @@ impl BatchedMeshInstance {
 		if what == Spatial::NOTIFICATION_VISIBILITY_CHANGED {
 			if let Some(id) = self.id {
 				remove_instance(
-					self.mesh.as_ref().expect("Mesh is None!"),
+					&owner.get_world().expect("World is None"),
+					self.mesh.as_ref().expect("Mesh is None"),
 					id,
 					self.use_color,
 				);
 				self.id = None;
 			}
-			if let Some(mesh) = self.mesh.as_ref() {
+			if let Some(mesh) = &self.mesh {
 				if self.visible(owner) {
-					let rid = { owner.get_world().unwrap() };
-					let rid = unsafe { rid.assume_safe() };
 					self.id = Some(add_instance(
+						owner.get_world().expect("World is None"),
 						mesh.clone(),
 						owner.cast_instance().unwrap().claim(),
-						rid,
 						self.use_color,
 					));
 				}
@@ -271,10 +276,11 @@ impl BatchedMeshInstance {
 		}
 	}
 
-	fn pre_change_mesh(&mut self, _owner: TRef<Spatial>) {
+	fn pre_change_mesh(&mut self, owner: TRef<Spatial>) {
 		if let Some(id) = self.id {
 			remove_instance(
-				self.mesh.as_ref().expect("Mesh is None!"),
+				&owner.get_world().expect("World is None"),
+				self.mesh.as_ref().expect("Mesh is None"),
 				id,
 				self.use_color,
 			);
@@ -285,12 +291,10 @@ impl BatchedMeshInstance {
 	fn post_change_mesh(&mut self, owner: TRef<Spatial>) {
 		if self.visible(owner) {
 			if let Some(mesh) = &self.mesh {
-				let rid = { owner.get_world().unwrap() };
-				let rid = unsafe { rid.assume_safe() };
 				self.id = Some(add_instance(
+					owner.get_world().expect("World is None"),
 					mesh.clone(),
 					owner.cast_instance().unwrap().claim(),
-					rid,
 					self.use_color,
 				));
 			}
@@ -299,20 +303,19 @@ impl BatchedMeshInstance {
 
 	fn toggling_use_color(&mut self, owner: TRef<Spatial>) {
 		if let Some(id) = self.id {
-			let mesh = self.mesh.as_ref().expect("Mesh is None!");
-			remove_instance(mesh, id, self.use_color);
+			let mesh = self.mesh.as_ref().expect("Mesh is None");
+			let world = owner.get_world().expect("World is None");
+			remove_instance(&world, &mesh, id, self.use_color);
 		}
 	}
 
 	fn toggled_use_color(&mut self, owner: TRef<Spatial>) {
 		if let Some(mesh) = &self.mesh {
 			if self.visible(owner) {
-				let rid = { owner.get_world().unwrap() };
-				let rid = unsafe { rid.assume_safe() };
 				self.id = Some(add_instance(
+					owner.get_world().expect("World is None"),
 					mesh.clone(),
 					owner.cast_instance().unwrap().claim(),
-					rid,
 					self.use_color,
 				));
 			}
@@ -333,14 +336,13 @@ impl BatchedMeshInstance {
 		self.color = [r, g, b, a];
 		if self.use_color {
 			if let Some(id) = self.id {
-				let mesh = self.mesh.as_ref().expect("Mesh is None!");
-				remove_instance(mesh, id, self.use_color);
-				let rid = { owner.get_world().unwrap() };
-				let rid = unsafe { rid.assume_safe() };
+				let mesh = self.mesh.as_ref().expect("Mesh is None");
+				let world = owner.get_world().expect("World is None");
+				remove_instance(&world, mesh, id, self.use_color);
 				self.id = Some(add_instance(
+					world,
 					mesh.clone(),
 					owner.cast_instance().unwrap().claim(),
-					rid,
 					self.use_color,
 				));
 			}
@@ -353,9 +355,9 @@ impl BatchedMeshInstance {
 }
 
 fn add_instance(
+	world: Ref<World>,
 	mesh: Ref<Mesh>,
 	node: Instance<BatchedMeshInstance, Shared>,
-	world: TRef<gdnative::api::World>,
 	use_color: bool,
 ) -> usize {
 	let vs = unsafe { VisualServer::godot_singleton() };
@@ -373,7 +375,9 @@ fn add_instance(
 		)
 	};
 
-	let entry = map.entry(mesh.clone()).or_insert_with(|| {
+	let scenario = unsafe { world.assume_safe().scenario() };
+
+	let entry = map.entry((world, mesh.clone())).or_insert_with(|| {
 		let mm_rid = vs.multimesh_create();
 		let mesh_rid = unsafe { mesh.assume_safe().get_rid() };
 		vs.multimesh_set_mesh(mm_rid, mesh_rid);
@@ -384,7 +388,7 @@ fn add_instance(
 			color_setting,
 			VisualServer::MULTIMESH_CUSTOM_DATA_NONE,
 		);
-		let inst_rid = vs.instance_create2(mm_rid, world.scenario());
+		let inst_rid = vs.instance_create2(mm_rid, scenario);
 		vs.instance_set_transform(
 			inst_rid,
 			Transform {
@@ -392,7 +396,7 @@ fn add_instance(
 				origin: Vector3::zero(),
 			},
 		);
-		vs.instance_set_scenario(inst_rid, world.scenario());
+		vs.instance_set_scenario(inst_rid, scenario);
 		vs.instance_set_base(inst_rid, mm_rid);
 		vs.instance_set_visible(inst_rid, true);
 		#[cfg(feature = "verbose")]
@@ -437,7 +441,7 @@ fn add_instance(
 	id
 }
 
-fn remove_instance(mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
+fn remove_instance(world: &Ref<World>, mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
 	let vs = unsafe { VisualServer::godot_singleton() };
 	let mut map = MULTI_MESHES.write().expect("Failed to access MULTI_MESHES");
 	let map = if uses_color {
@@ -445,7 +449,9 @@ fn remove_instance(mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
 	} else {
 		&mut map.no_color_map
 	};
-	let entry = map.get_mut(mesh).expect("Entry not found");
+	// TODO find a way to do this without cloning
+	let key = &(world.clone(), mesh.clone());
+	let entry = map.get_mut(key).expect("Entry not found");
 	let index = entry
 		.nodes
 		.binary_search_by(|e| e.id.cmp(&id))
@@ -460,7 +466,7 @@ fn remove_instance(mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
 		);
 		vs.free_rid(entry.instance_rid);
 		vs.free_rid(entry.multimesh_rid);
-		map.remove(mesh);
+		map.remove(key);
 	}
 }
 
