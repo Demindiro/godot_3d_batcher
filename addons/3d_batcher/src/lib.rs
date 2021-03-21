@@ -55,7 +55,10 @@ struct BatchedMeshInstance {
 	)]
 	mesh: Option<Ref<Mesh>>,
 	id: Option<usize>,
-	#[property(after_set = "Self::toggled_use_color")]
+	#[property(
+		before_set = "Self::toggling_use_color",
+		after_set = "Self::toggled_use_color"
+	)]
 	use_color: bool,
 	color: [u8; 4],
 }
@@ -294,18 +297,25 @@ impl BatchedMeshInstance {
 		}
 	}
 
-	fn toggled_use_color(&mut self, owner: TRef<Spatial>) {
+	fn toggling_use_color(&mut self, owner: TRef<Spatial>) {
 		if let Some(id) = self.id {
 			let mesh = self.mesh.as_ref().expect("Mesh is None!");
-			remove_instance(mesh, id, !self.use_color);
-			let rid = { owner.get_world().unwrap() };
-			let rid = unsafe { rid.assume_safe() };
-			self.id = Some(add_instance(
-				mesh.clone(),
-				owner.cast_instance().unwrap().claim(),
-				rid,
-				self.use_color,
-			));
+			remove_instance(mesh, id, self.use_color);
+		}
+	}
+
+	fn toggled_use_color(&mut self, owner: TRef<Spatial>) {
+		if let Some(mesh) = &self.mesh {
+			if self.visible(owner) {
+				let rid = { owner.get_world().unwrap() };
+				let rid = unsafe { rid.assume_safe() };
+				self.id = Some(add_instance(
+					mesh.clone(),
+					owner.cast_instance().unwrap().claim(),
+					rid,
+					self.use_color,
+				));
+			}
 		}
 	}
 
