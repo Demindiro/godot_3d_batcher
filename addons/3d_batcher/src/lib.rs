@@ -1,4 +1,9 @@
-use gdnative::api::{Mesh, Node, VisualServer};
+#![feature(destructuring_assignment)]
+
+mod cull;
+
+use cull::*;
+use gdnative::api::{Engine, Mesh, Node, Object, VisualServer};
 use gdnative::prelude::*;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
@@ -10,8 +15,10 @@ lazy_static! {
 	static ref MULTI_MESHES: RwLock<State> = RwLock::new(State {
 		id_counter: 0,
 		no_color_map: HashMap::new(),
-		color_map: HashMap::new()
+		color_map: HashMap::new(),
+		enable_culling: true,
 	});
+	static ref MANAGERS: RwLock<Vec<Ref<Node>>> = RwLock::new(Vec::new());
 }
 
 struct NodeEntry {
@@ -30,10 +37,12 @@ struct State {
 	id_counter: usize,
 	no_color_map: HashMap<Ref<Mesh>, MultiMeshEntry>,
 	color_map: HashMap<Ref<Mesh>, MultiMeshEntry>,
+	enable_culling: bool,
 }
 
 #[derive(NativeClass)]
 #[inherit(Node)]
+#[register_with(Self::register)]
 struct BatchedMeshManager {}
 
 #[derive(NativeClass)]
@@ -53,8 +62,36 @@ struct BatchedMeshInstance {
 
 #[methods]
 impl BatchedMeshManager {
-	fn new(_owner: TRef<Node>) -> Self {
+	fn register(builder: &ClassBuilder<Self>) {
+		builder.add_signal(Signal {
+			name: "reload",
+			args: &[],
+		});
+		builder.add_property("enable_culling")
+			.with_getter(Self::gd_get_enable_culling)
+			.with_setter(Self::gd_set_enable_culling)
+			.done();
+	}
+
+	fn new(owner: TRef<Node>) -> Self {
+		MANAGERS
+			.write()
+			.expect("Failed to write MANAGERS")
+			.push(owner.claim());
 		Self {}
+	}
+
+	#[export]
+	fn _notification(&self, owner: TRef<Node>, what: i64) {
+		if what == Object::NOTIFICATION_PREDELETE {
+			let mut managers = MANAGERS.write().expect("Failed to write MANAGERS");
+			let owner = owner.claim();
+			let index = managers
+				.iter()
+				.position(|v| v == &owner)
+				.expect("Failed to find manager");
+			managers.swap_remove(index);
+		}
 	}
 
 	#[export]
@@ -66,47 +103,94 @@ impl BatchedMeshManager {
 
 	#[export]
 	#[profiled(tag = "Batcher/Update transforms")]
-	fn _update_transforms(&self, _owner: TRef<Node>) {
+	fn _update_transforms(&self, owner: TRef<Node>) {
 		let mut map = MULTI_MESHES.write().expect("Failed to read MULTI_MESHES");
+		let enable_culling = map.enable_culling;
 		let vs = unsafe { VisualServer::godot_singleton() };
-		for entry in map.no_color_map.values_mut() {
+		let frustum = unsafe {
+			owner
+				.get_tree()
+				.expect("Not inside tree")
+				.assume_safe()
+				.root()
+				.expect("Tree has no root")
+				.assume_safe()
+				.get_camera()
+				.map(|c| c.assume_safe().get_frustum())
+		};
+
+		let (frustum, enable_culling) = if let Some(frustum) = frustum {
+			let mut fr = [Plane::new(Vector3::zero(), 0.0); 6];
+			for (i, e) in frustum.iter().enumerate() {
+				fr[i] = e.try_to_plane().expect("Element is not a plane");
+			}
+			(Frustum::new(fr), enable_culling)
+		} else if Engine::godot_singleton().is_editor_hint() {
+			// godot pls gief camera
+			(Frustum::new([Plane::new(Vector3::zero(), 0.0); 6]), false)
+		} else {
+			// There is no active camera, don't bother
+			return;
+		};
+
+		for (mesh, entry) in map.no_color_map.iter_mut() {
+			let mut count = 0usize;
 			let mut w = entry.visualserver_data.write();
-			for (i, e) in entry.nodes.iter().enumerate() {
+			let aabb = unsafe { mesh.assume_safe().get_aabb() };
+			for e in entry.nodes.iter() {
 				unsafe {
 					e.node
 						.assume_safe()
 						.map(|_, o| {
 							let trf = o.global_transform();
-							for (k, &e) in transform_to_array(trf).iter().enumerate() {
-								w[i * 12 + k] = e;
+							if !enable_culling || frustum.is_aabb_visible(aabb, trf) {
+								for (k, &e) in transform_to_array(trf).iter().enumerate() {
+									w[count * 12 + k] = e;
+								}
+								count += 1;
 							}
 						})
 						.expect("Failed to borrow node");
 				}
 			}
 			drop(w);
+			vs.multimesh_set_visible_instances(entry.multimesh_rid, count as i64);
 			vs.multimesh_set_as_bulk_array(entry.multimesh_rid, entry.visualserver_data.clone());
 		}
-		for entry in map.color_map.values_mut() {
+		for (mesh, entry) in map.color_map.iter_mut() {
+			let mut count = 0usize;
 			let mut w = entry.visualserver_data.write();
-			for (i, e) in entry.nodes.iter().enumerate() {
+			let aabb = unsafe { mesh.assume_safe().get_aabb() };
+			for e in entry.nodes.iter() {
 				unsafe {
 					e.node
 						.assume_safe()
 						.map(|s, o| {
 							let trf = o.global_transform();
-							for (k, &e) in transform_to_array(trf).iter().enumerate() {
-								w[i * 13 + k] = e;
+							if !enable_culling || frustum.is_aabb_visible(aabb, trf) {
+								for (k, &e) in transform_to_array(trf).iter().enumerate() {
+									w[count * 13 + k] = e;
+								}
+								// TODO is it always little endian?
+								w[count * 13 + 12] = f32::from_le_bytes(s.color);
+								count += 1;
 							}
-							// TODO is it always little endian?
-							w[i * 13 + 12] = f32::from_le_bytes(s.color);
 						})
 						.expect("Failed to borrow node");
 				}
 			}
 			drop(w);
+			vs.multimesh_set_visible_instances(entry.multimesh_rid, count as i64);
 			vs.multimesh_set_as_bulk_array(entry.multimesh_rid, entry.visualserver_data.clone());
 		}
+	}
+
+	fn gd_get_enable_culling(&self, _owner: TRef<Node>) -> bool {
+		MULTI_MESHES.read().expect("Failed to read MULTI_MESHES").enable_culling
+	}
+
+	fn gd_set_enable_culling(&mut self, _owner: TRef<Node>, enable: bool) {
+		MULTI_MESHES.write().expect("Failed to write MULTI_MESHES").enable_culling = enable;
 	}
 }
 
@@ -173,7 +257,12 @@ impl BatchedMeshInstance {
 				if self.visible(owner) {
 					let rid = { owner.get_world().unwrap() };
 					let rid = unsafe { rid.assume_safe() };
-					self.id = Some(add_instance(mesh.clone(), owner.cast_instance().unwrap().claim(), rid, self.use_color));
+					self.id = Some(add_instance(
+						mesh.clone(),
+						owner.cast_instance().unwrap().claim(),
+						rid,
+						self.use_color,
+					));
 				}
 			}
 		}
@@ -334,7 +423,6 @@ fn add_instance(
 		);
 		vs.multimesh_set_as_bulk_array(entry.multimesh_rid, entry.visualserver_data.clone());
 	}
-	vs.multimesh_set_visible_instances(entry.multimesh_rid, entry.nodes.len() as i64);
 
 	id
 }
@@ -355,18 +443,15 @@ fn remove_instance(mesh: &Ref<Mesh>, id: usize, uses_color: bool) {
 	entry.nodes.remove(index);
 	if entry.nodes.len() == 0 {
 		#[cfg(feature = "verbose")]
-		godot_print!("Removing {:?} & {:?}", entry.instance_rid, entry.multimesh_rid);
+		godot_print!(
+			"Removing {:?} & {:?}",
+			entry.instance_rid,
+			entry.multimesh_rid
+		);
 		vs.free_rid(entry.instance_rid);
 		vs.free_rid(entry.multimesh_rid);
 		map.remove(mesh);
-	} else {
-		vs.multimesh_set_visible_instances(entry.multimesh_rid, entry.nodes.len() as i64);
 	}
-}
-
-fn init(handle: InitHandle) {
-	handle.add_tool_class::<BatchedMeshInstance>();
-	handle.add_tool_class::<BatchedMeshManager>();
 }
 
 fn transform_to_array(transform: Transform) -> [f32; 12] {
@@ -376,6 +461,11 @@ fn transform_to_array(transform: Transform) -> [f32; 12] {
 	[
 		bx.x, by.x, bz.x, to.x, bx.y, by.y, bz.y, to.y, bx.z, by.z, bz.z, to.z,
 	]
+}
+
+fn init(handle: InitHandle) {
+	handle.add_tool_class::<BatchedMeshInstance>();
+	handle.add_tool_class::<BatchedMeshManager>();
 }
 
 godot_init!(init);
